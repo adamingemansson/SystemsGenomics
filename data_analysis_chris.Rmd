@@ -1,0 +1,391 @@
+---
+title: "data_analysis"
+author: "Christoph Luh"
+date: "2025-10-29"
+output: html_document
+---
+
+```{r}
+setwd("C:/Users/Chris/OneDrive/Documentos/SystemsGenomics")
+getwd()
+list.files()
+```
+#Change to adam branch before importing
+```{r}
+library(readr)
+expr <- read.csv("~/SystemsGenomics/rsem_matrix.csv", row.names = 1, check.names = FALSE)
+```
+
+#Change to main branch bevore importing
+```{r}
+meta_data <- read_csv("~/SystemsGenomics/meta_data.csv")
+```
+```{r}
+head(meta_data)
+```
+
+```{r}
+head(expr)
+```
+
+
+```{r}
+library(biomaRt)
+library(dplyr)  # enthält right_join, distinct und %>%
+
+
+ensembl <- useEnsembl(biomart = "ensembl",
+                      dataset = "hsapiens_gene_ensembl")
+meta_genes <- getBM(attributes = c("ensembl_gene_id",
+                                   "ensembl_gene_id_version",
+                                   "hgnc_symbol",
+                                   "description",
+                                   "chromosome_name",
+                                   "start_position",
+                                   "end_position",
+                                   "strand"),
+                    filters = "ensembl_gene_id_version",
+                    values = rownames(expr),
+                    mart = ensembl) %>%
+  right_join(data.frame(ensembl_gene_id_version = rownames(expr)),
+             by = "ensembl_gene_id_version") %>%
+  distinct(ensembl_gene_id_version, .keep_all = TRUE)
+
+
+expr <- expr[meta_genes$ensembl_gene_id_version,]
+```
+
+
+
+
+#First Analysis
+```{r}
+dim(expr)
+avg_expr <- rowMeans(expr)
+summary(avg_expr)
+
+layout(matrix(1:2, nrow=1))
+hist(avg_expr)
+hist(log10(avg_expr + 1))
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(data.frame(avg_expr), aes(x=avg_expr)) +
+  geom_histogram(bins = 50) +
+  scale_x_continuous(breaks = c(0,1,10,100,1000,10000,20000), trans="log1p", expand=c(0,0)) +
+  scale_y_continuous(breaks = c(0,1), expand=c(0,0), trans="log1p") +
+  theme_minimal()
+```
+
+```{r}
+num_det <- rowSums(expr > 0)
+hist(num_det)
+```
+As we can see, most of the genes are expressed in ALL the 30 samples. Only a very small fraction of genes is not expressed at all. As in cancer tumor supressor genes are often silenced, I would not ignore unexpressed genes!
+
+```{r}
+expressed <- rowMeans(expr > 0) >= 0.5 | rowMeans(expr) >= 1
+```
+
+
+```{r}
+meta_genes$expressed <- expressed
+```
+
+```{r}
+corr_pearson <- cor(log1p(expr[meta_genes$expressed,]))
+corr_spearman <- cor(expr[meta_genes$expressed,], method = "spearman")
+```
+
+```{r}
+hcl_pearson <- hclust(as.dist(1 - corr_pearson))
+hcl_spearman <- hclust(as.dist(1 - corr_spearman))
+
+layout(matrix(1:2,nrow=1))
+plot(hcl_pearson)
+plot(hcl_spearman)
+```
+
+
+
+```{r}
+meta_data
+```
+```{r}
+# Angenommen: meta_data$Run enthält die SRR-IDs
+# expr hat colnames = SRR-IDs
+
+meta_data_filtered <- meta_data[meta_data$Run %in% colnames(expr), ]
+
+# Reihenfolge an colnames von expr anpassen
+meta_data_filtered <- meta_data_filtered[match(colnames(expr), meta_data_filtered$Run), ]
+
+# Prüfen
+all(meta_data_filtered$Run == colnames(expr))  # sollte TRUE sein
+
+
+```
+
+
+```{r}
+# -------------------------------
+# Heatmap der Korrelationsmatrix mit WHO-Gruppen
+# -------------------------------
+
+library(dplyr)
+
+# 1. Gefilterte meta_data anhand der Spalten von expr
+meta_data_filtered <- meta_data[meta_data$Run %in% colnames(expr), ]
+meta_data_filtered <- meta_data_filtered[match(colnames(expr), meta_data_filtered$Run), ]
+stopifnot(all(meta_data_filtered$Run == colnames(expr)))  # Check
+
+# 2. Nur exprimierte Gene auswählen
+expr_filtered <- expr[meta_genes$expressed, ]
+
+# 3. log1p Transformation
+expr_log <- log1p(expr_filtered)
+
+# 4. Pearson-Korrelationsmatrix der Samples berechnen
+corr_pearson <- cor(expr_log)
+
+# 5. WHO-Klassen extrahieren
+tumor_group <- meta_data_filtered$WHO_class
+names(tumor_group) <- colnames(corr_pearson)
+
+# 6. Automatisch Farben für jede Klasse erstellen
+classes <- unique(tumor_group)
+group_colors <- setNames(rainbow(length(classes)), classes)
+col_side_colors <- as.character(group_colors[tumor_group])
+
+# 7. Heatmap zeichnen mit Side Colors
+heatmap(corr_pearson,
+        symm = TRUE,
+        col = colorRampPalette(c("blue","white","red"))(100),
+        margins = c(5,5),
+        RowSideColors = col_side_colors,
+        ColSideColors = col_side_colors)
+
+# 8. Legende hinzufügen
+legend("topright",
+       legend = names(group_colors),
+       fill = group_colors,
+       border = NA,
+       bty = "n",
+       cex = 0.8)
+
+
+```
+
+
+```{r}
+# -------------------------------
+# Heatmap der Top 1000 variabelsten Gene mit WHO_class und history
+# -------------------------------
+
+library(pheatmap)
+
+# 1. Gefilterte meta_data nach Spalten von expr
+meta_data_filtered <- meta_data[meta_data$Run %in% colnames(expr), ]
+meta_data_filtered <- meta_data_filtered[match(colnames(expr), meta_data_filtered$Run), ]
+stopifnot(all(meta_data_filtered$Run == colnames(expr)))
+
+# 2. Nur exprimierte Gene auswählen
+expr_filtered <- expr[meta_genes$expressed, ]
+
+# 3. Log1p-Transformation und Matrix konvertieren
+expr_mat <- as.matrix(log1p(expr_filtered))
+
+# 4. Top 1000 variabelste Gene auswählen
+gene_variances <- apply(expr_mat, 1, var)
+top_genes <- head(order(gene_variances, decreasing = TRUE), 1000)
+expr_mat_top <- expr_mat[top_genes, ]
+
+# 5. WHO_class und history pro Sample extrahieren
+annotation_df <- data.frame(
+  WHO_class = meta_data_filtered$WHO_class,
+  history   = meta_data_filtered$history
+)
+rownames(annotation_df) <- colnames(expr_mat_top)
+
+# 6. Farben automatisch für jede WHO_class und history erzeugen
+group_colors <- list(
+  WHO_class = setNames(rainbow(length(unique(annotation_df$WHO_class))), unique(annotation_df$WHO_class)),
+  history   = setNames(rainbow(length(unique(annotation_df$history))), unique(annotation_df$history))
+)
+
+# 7. Heatmap zeichnen
+pheatmap(expr_mat_top,
+         scale = "row",          # Normalisierung pro Gen
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         show_rownames = FALSE,
+         show_colnames = TRUE,
+         annotation_col = annotation_df,
+         annotation_colors = group_colors,
+         color = colorRampPalette(c("blue","white","red"))(100))
+
+```
+
+```{r}
+# --- Bibliotheken laden ---
+library(pheatmap)
+library(gridExtra)
+library(grid)
+
+# --- 1. Liste der Vergleiche ---
+comparisons <- list(
+  c("oligodendroastrocytomas","anaplastic oligodendroastrocytomas"),
+  c("oligodendrogliomas","anaplastic oligodendrogliomas"),
+  c("astrocytomas","anaplastic astrocytomas")
+)
+
+# --- 2. Funktion zur Erstellung einer Heatmap ---
+create_heatmap <- function(tumor_types, expr_mat, meta_data_filtered, meta_genes, top_n = 1000){
+  
+  # Filtere Samples nach Tumorarten
+  samples_keep <- meta_data_filtered$Run[meta_data_filtered$history %in% tumor_types]
+  expr_sub <- expr_mat[meta_genes$expressed, samples_keep]
+  
+  # Wähle die Top-N variabelsten Gene
+  gene_var <- apply(expr_sub, 1, var)
+  top_genes <- head(order(gene_var, decreasing = TRUE), top_n)
+  expr_sub_top <- as.matrix(log1p(expr_sub[top_genes, ]))
+  
+  # Annotation (Tumorart pro Sample)
+  annotation_df <- data.frame(
+    history = meta_data_filtered$history[meta_data_filtered$Run %in% samples_keep]
+  )
+  rownames(annotation_df) <- colnames(expr_sub_top)
+  
+  # Farbdefinition für Annotation
+  ann_colors <- list(
+    history = setNames(rainbow(length(unique(annotation_df$history))), unique(annotation_df$history))
+  )
+  
+  # Heatmap erzeugen (nicht sofort anzeigen)
+  p <- pheatmap(expr_sub_top,
+                scale = "row",
+                cluster_rows = TRUE,
+                cluster_cols = TRUE,
+                show_rownames = FALSE,
+                show_colnames = TRUE,
+                annotation_col = annotation_df,
+                annotation_colors = ann_colors,
+                silent = TRUE)
+  return(p)
+}
+
+# --- 3. Heatmaps für alle Vergleiche erzeugen ---
+heatmaps <- lapply(comparisons, function(x) create_heatmap(x, expr, meta_data_filtered, meta_genes, top_n = 500))
+
+# --- 4. Jede Heatmap einzeln anzeigen ---
+for (i in seq_along(heatmaps)) {
+  message("Zeige Heatmap für: ", paste(comparisons[[i]], collapse = " vs "))
+  grid.newpage()
+  grid.draw(heatmaps[[i]]$gtable)
+}
+
+
+
+```
+
+```{r}
+setwd("C:/Users/Chris/OneDrive/Documentos/SystemsGenomics")
+getwd()
+list.files()
+library(readr)
+meta_data_all <- read_csv("C:/Users/Chris/Downloads/SraRunTable.csv")
+```
+
+```{r}
+library(dplyr)
+meta_data_all %>%
+  filter(history %in% c("astrocytomas", "anaplastic astrocytomas"))
+
+```
+```{r}
+pca <- prcomp(log1p(t(expr[meta_genes$expressed,])), center = TRUE, scale. = TRUE)
+eigs <- pca$sdev^2
+plot(1:length(eigs), eigs)
+ggplot(data.frame(pca$x, meta_data)) +
+  geom_point(aes(x = PC1, y = PC2, color = meta_data$history, shape = Individual), size = 5)
+```
+```{r}
+# PCA berechnen
+pca <- prcomp(log1p(t(expr[meta_genes$expressed, ])), center = TRUE, scale. = TRUE)
+
+# Eigenwerte (Varianzanteile) plotten (optional)
+eigs <- pca$sdev^2
+plot(1:length(eigs), eigs, type = "b", main = "Screeplot", xlab = "Principal Component", ylab = "Eigenvalue")
+
+# Sicherstellen, dass Reihenfolge der Metadaten zur PCA passt
+meta_data_ordered <- meta_data[match(colnames(expr), meta_data$Run), ]
+
+# PCA-Plot mit ggplot2
+library(ggplot2)
+
+ggplot(data.frame(pca$x, meta_data_ordered)) +
+  geom_point(aes(x = PC1, y = PC2, color = history), size = 4) +
+  theme_minimal() +
+  labs(
+    title = "PCA der Tumorproben",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Tumortyp"
+  ) +
+  theme(
+    text = element_text(size = 14),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+
+```{r}
+# --- PCA berechnen ---
+pca <- prcomp(log1p(t(expr[meta_genes$expressed, ])), center = TRUE, scale. = TRUE)
+
+# --- Eigenwerteplot (optional) ---
+eigs <- pca$sdev^2
+plot(1:length(eigs), eigs, type = "b", main = "Screeplot", 
+     xlab = "Principal Component", ylab = "Eigenvalue")
+
+# --- Metadaten anpassen ---
+meta_data_ordered <- meta_data[match(colnames(expr), meta_data$Run), ]
+
+# 1️⃣ Cluster nach Anaplasie
+meta_data_ordered$cluster <- ifelse(
+  grepl("^anaplastic", meta_data_ordered$history, ignore.case = TRUE),
+  "anaplastic",
+  "non-anaplastic"
+)
+
+# 2️⃣ Tumor-Basisnamen (Form-Gruppierung)
+# Entfernt "anaplastic " vom Anfang, sodass z. B. "anaplastic astrocytomas" -> "astrocytomas"
+meta_data_ordered$tumor_base <- gsub("^anaplastic\\s+", "", meta_data_ordered$history, ignore.case = TRUE)
+
+# --- PCA-Plot ---
+library(ggplot2)
+
+ggplot(data.frame(pca$x, meta_data_ordered)) +
+  geom_point(aes(x = PC1, y = PC2, 
+                 color = cluster,       # Farbe = anaplastic / non-anaplastic
+                 shape = tumor_base),   # Form = Tumor-Basis (z. B. astrocytomas)
+             size = 5, alpha = 0.85) +
+  scale_color_manual(values = c("anaplastic" = "#D55E00", "non-anaplastic" = "#0072B2")) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "PCA: Anaplastic vs Non-Anaplastic Tumorproben",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Cluster",
+    shape = "Tumortyp"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+```
+
