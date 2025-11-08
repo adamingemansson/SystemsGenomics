@@ -1,0 +1,174 @@
+---
+title: "PCA_expression"
+author: "Christoph Luh"
+date: "2025-11-07"
+output: html_document
+---
+
+#Load and filter 
+```{bash}
+git checkout chris
+```
+
+```{r}
+#Read meta_data
+meta_data <- read.csv("meta_data_unfiltered", row.names = 1)
+meta_data <- data.frame(Run = meta_data$Run, history = meta_data$history)
+
+#Remove unwanted histroy
+exclude_terms <- c(
+  "recurrent astrocytomas",
+  "secondary Glioblastomas",
+  "recurrent anaplastic oligodendrogliomas",
+  "recurrent anaplastic astrocytomas",
+  "recurrent anaplastic oligodendroastrocytomas",
+  "recurrent Glioblastomas",
+  "recurrent oligodendroastrocytomas"
+)
+
+meta_data <- meta_data[!(meta_data$history %in% exclude_terms), ]
+
+meta_data$severity <- ifelse(
+  grepl("anaplastic|primary", meta_data$history, ignore.case = TRUE),
+  "high",
+  "low"
+)
+
+#Create filtering columns
+tumor_types <- c("astrocytomas", "oligodendroastrocytomas", "oligodendrogliomas")
+
+for (tumor in tumor_types) {
+  col_name <- tumor
+  
+  meta_data[[col_name]] <- ifelse(
+    meta_data$history %in% c(tumor, paste("anaplastic", tumor)),
+    1,
+    0
+  )
+}
+
+meta_data$glioblastomas <- ifelse(
+  meta_data$history %in% c("primary Glioblastomas"),
+  1,
+  0
+)
+
+print(meta_data)
+
+```
+
+#Load and filter expression data
+```{bash}
+git checkout main
+```
+```{r}
+expr <- read.csv("expression_matrix.csv", row.names = 1)
+expr <- expr[colnames(expr) %in% meta_data$Run]
+expr
+```
+
+```{r}
+library(biomaRt)
+library(dplyr)
+
+
+ensembl <- useEnsembl(biomart = "ensembl",
+                      dataset = "hsapiens_gene_ensembl")
+meta_genes <- getBM(attributes = c("ensembl_gene_id",
+                                   "ensembl_gene_id_version",
+                                   "hgnc_symbol",
+                                   "description",
+                                   "chromosome_name",
+                                   "start_position",
+                                   "end_position",
+                                   "strand"),
+                    filters = "ensembl_gene_id_version",
+                    values = rownames(expr),
+                    mart = ensembl) %>%
+  right_join(data.frame(ensembl_gene_id_version = rownames(expr)),
+             by = "ensembl_gene_id_version") %>%
+  distinct(ensembl_gene_id_version, .keep_all = TRUE)
+
+
+expr <- expr[meta_genes$ensembl_gene_id_version,]
+
+```
+```{r}
+library(ggplot2)
+num_det <- rowSums(expr > 0)
+hist(num_det)
+expressed <- rowMeans(expr > 0) >= 0.5 | rowMeans(expr) >= 1
+meta_genes$expressed <- expressed
+```
+#Calculate PCA of expression levels
+```{r}
+# Bibliotheken laden
+library(ggplot2)
+library(plotly)
+
+pca_expr <- prcomp(log1p(t(expr[meta_genes$expressed, ])), center = TRUE, scale. = TRUE)
+
+# PCA-Ergebnisse in DataFrame umwandeln
+pca_scorings <- as.data.frame(pca_expr$x)
+pca_scorings$Run <- rownames(pca_scorings)
+
+# History und Severity aus meta_data mergen
+pca_scorings <- merge(
+  pca_scorings,
+  meta_data[, c("Run", "history", "severity")],
+  by = "Run"
+)
+```
+
+#Visualize PCA
+```{r}
+# ggplot erstellen
+p <- ggplot(pca_scorings, aes(
+  x = PC1,
+  y = PC2,
+  color = severity,
+  shape = history,
+  text = paste(
+    "Run:", Run,
+    "<br>History:", history,
+    "<br>Severity:", severity
+  )
+)) +
+  geom_point(size = 3, alpha = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "PCA of the expression levels",
+    x = paste0("PC1"),
+    y = paste0("PC2")
+  )
+
+# Interaktiver Plotly-Plot
+ggplotly(p, tooltip = "text")
+
+```
+
+#Cluster the PCs
+```{r}
+set.seed(123)  # für Reproduzierbarkeit
+
+# Clustering auf den ersten 2 PCs
+kmeans_result <- kmeans(pca_scorings[, c("PC1", "PC2")], centers = 2, nstart = 25)
+
+# Clusterlabels speichern
+pca_scorings$cluster <- as.factor(kmeans_result$cluster)
+
+```
+
+```{r}
+library(plotly)
+
+p <- ggplot(pca_scorings, aes(x = PC1, y = PC2, color = cluster, text = rownames(pca_scorings))) +
+  geom_point(size = 3, alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "K-Means-Clustering of PCA")
+
+ggplotly(p, tooltip = "text")
+
+```
+
+As the k-means clustering shows, there woll most likely be a difference between "non-anaplastic" and anaplastic tumors (incl. primary glioblastoma). 

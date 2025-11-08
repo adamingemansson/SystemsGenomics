@@ -1,0 +1,351 @@
+---
+title: "DESeq2_expression"
+author: "Christoph Luh"
+date: "2025-11-07"
+output: html_document
+---
+
+#Load and filter 
+```{bash}
+git checkout chris
+```
+
+```{r}
+#Read meta_data
+meta_data <- read.csv("meta_data_unfiltered", row.names = 1)
+meta_data <- data.frame(Run = meta_data$Run, history = meta_data$history)
+
+#Remove unwanted histroy
+exclude_terms <- c(
+  "recurrent astrocytomas",
+  "secondary Glioblastomas",
+  "recurrent anaplastic oligodendrogliomas",
+  "recurrent anaplastic astrocytomas",
+  "recurrent anaplastic oligodendroastrocytomas",
+  "recurrent Glioblastomas",
+  "recurrent oligodendroastrocytomas"
+)
+
+meta_data <- meta_data[!(meta_data$history %in% exclude_terms), ]
+
+meta_data$severity <- ifelse(
+  grepl("anaplastic|primary", meta_data$history, ignore.case = TRUE),
+  "high",
+  "low"
+)
+
+#Create filtering columns
+tumor_types <- c("astrocytomas", "oligodendroastrocytomas", "oligodendrogliomas")
+
+for (tumor in tumor_types) {
+  col_name <- tumor
+  
+  meta_data[[col_name]] <- ifelse(
+    meta_data$history %in% c(tumor, paste("anaplastic", tumor)),
+    1,
+    0
+  )
+}
+
+meta_data$glioblastomas <- ifelse(
+  meta_data$history %in% c("primary Glioblastomas"),
+  1,
+  0
+)
+
+print(meta_data)
+
+```
+
+#Load and filter expression data
+```{bash}
+git checkout main
+```
+```{r}
+expr <- read.csv("expression_matrix.csv", row.names = 1)
+expr <- expr[colnames(expr) %in% meta_data$Run]
+expr
+```
+
+```{r}
+library(biomaRt)
+library(dplyr)
+
+
+ensembl <- useEnsembl(biomart = "ensembl",
+                      dataset = "hsapiens_gene_ensembl")
+meta_genes <- getBM(attributes = c("ensembl_gene_id",
+                                   "ensembl_gene_id_version",
+                                   "hgnc_symbol",
+                                   "description",
+                                   "chromosome_name",
+                                   "start_position",
+                                   "end_position",
+                                   "strand"),
+                    filters = "ensembl_gene_id_version",
+                    values = rownames(expr),
+                    mart = ensembl) %>%
+  right_join(data.frame(ensembl_gene_id_version = rownames(expr)),
+             by = "ensembl_gene_id_version") %>%
+  distinct(ensembl_gene_id_version, .keep_all = TRUE)
+
+
+expr <- expr[meta_genes$ensembl_gene_id_version,]
+
+```
+```{r}
+library(ggplot2)
+num_det <- rowSums(expr > 0)
+hist(num_det)
+expressed <- rowMeans(expr > 0) >= 0.5 | rowMeans(expr) >= 1
+meta_genes$expressed <- expressed
+```
+
+#Load DDS File
+```{r}
+library(DESeq2)
+dds <- readRDS("dds.rds")
+```
+
+#Add the sample names to the dds object
+```{r}
+colnames(dds) <- colnames(read.csv("expression_matrix.csv", row.names = 1))
+rownames(colData(dds)) <- colData(dds)$Run
+```
+
+#Clean the colData(dds) from all the secondary/recursive tumors by using meta_data
+```{r}
+# 1️⃣ Filter samples im dds, die nicht in meta_data enthalten sind
+dds <- dds[, colnames(dds) %in% meta_data$Run]
+
+# 2️⃣ Bringe colData(dds) in die Reihenfolge von meta_data
+dds <- dds[, match(meta_data$Run, colnames(dds))]
+
+# 3️⃣ Prüfen, ob alles korrekt übereinstimmt
+all(colnames(dds) == meta_data$Run)  # sollte TRUE ergeben
+
+```
+
+#Add all the important information from meta_data like severity, tumor types,...
+```{r}
+# Hänge alle Spalten (außer "Run") aus meta_data an colData(dds)
+colData(dds) <- cbind(
+  colData(dds),
+  meta_data[, setdiff(names(meta_data), "Run"), drop = FALSE]
+)
+```
+
+
+#Differential expression between low and high grade tumors
+```{r}
+# 1️⃣ Prüfen, ob die Spalte vorhanden ist
+head(colData(dds)$severity)
+
+# 2️⃣ Sicherstellen, dass sie ein Faktor ist (kein Character!)
+colData(dds)$severity <- factor(colData(dds)$severity, levels = c("low", "high"))
+
+# 3️⃣ Design setzen
+design(dds) <- ~ severity
+
+dds$severity <- relevel(dds$severity, ref = "low")
+
+# 4️⃣ Testlauf starten
+dds_hilo <- DESeq(dds)
+
+# 5️⃣ Ergebnisse holen
+res_severity <- results(dds_hilo, contrast = c("severity", "high", "low"))
+
+# 6️⃣ Zusammenfassung
+summary(res_severity)
+```
+```{r}
+res_severity
+```
+
+
+```{r}
+# Volcano plot
+library(ggplot2)
+
+res_df <- as.data.frame(res_severity)
+res_df$significant <- ifelse(
+  res_df$padj < 0.1 & abs(res_df$log2FoldChange) > 1,
+  "Significant", "Not significant"
+)
+
+ggplot(res_df, aes(x = log2FoldChange, y = -log10(pvalue), color = significant)) +
+  geom_point(alpha = 0.8, size = 2) +
+  scale_color_manual(values = c("gray70", "red")) +
+  theme_minimal() +
+  labs(title = "Volcano Plot: High vs Low Severity",
+       x = "log2 Fold Change (High vs Low)",
+       y = "-log10(p-value)")
+
+
+```
+
+
+```{r}
+DEG <- res_df[res_df$significant %in% "Significant", ]
+```
+
+```{r}
+DEG
+DEG_list = rownames(DEG)
+DEG_list
+```
+```{r}
+expr_DEG = expr[rownames(expr) %in% DEG_list, ]
+expr_DEG
+```
+
+```{r}
+library(ggplot2)
+library(pheatmap)
+# Optional: Log-Transformation zur Stabilisierung
+data_log <- log2(expr_DEG + 1)
+
+heatmap(as.matrix(data_log),
+        col = colorRampPalette(c("blue", "white", "red"))(100),
+        scale = "row",        # skaliert Gene zeilenweise (optional)
+        margins = c(6, 8),    # Platz für Beschriftung
+        main = "Heatmap der Genexpressionslevel")
+```
+
+
+
+
+
+
+
+
+
+
+
+_________________________________________________________
+
+
+```{r}
+cols_to_factor <- c("astrocytomas", "oligodendroastrocytomas",
+                    "oligodendrogliomas", "glioblastomas")
+
+for (col in cols_to_factor) {
+  colData(dds)[[col]] <- factor(colData(dds)[[col]],
+                                levels = c(0, 1),
+                                labels = c("no", "yes"))
+}
+```
+
+
+
+```{r}
+colData(dds)$tumor_group <- with(colData(dds), dplyr::case_when(
+  astrocytomas == "yes" ~ "astro",
+  oligodendrogliomas == "yes" ~ "oligo",
+  oligodendroastrocytomas == "yes" ~ "oligoastro",
+  glioblastomas == "yes" ~ "gbm",
+  TRUE ~ NA_character_
+))
+
+
+# 🔹 Als Faktor kodieren und Referenzgruppe festlegen (optional)
+colData(dds)$tumor_group <- factor(
+  colData(dds)$tumor_group,
+  levels = c("astro", "oligo", "oligoastro", "gbm")
+)
+```
+
+```{r}
+colData(dds)$tumor_group
+```
+
+```{r}
+design(dds) <- ~ tumor_group
+dds_tumor_type <- DESeq(dds)
+```
+#Astro vs other
+```{r}
+res_astro <- results(dds_tumor_type, contrast = c("tumor_group", "astro", "gbm"))
+
+# Volcano plot
+library(ggplot2)
+
+res_df <- as.data.frame(res_astro)
+res_df$significant <- ifelse(
+  res_df$padj < 0.1 & abs(res_df$log2FoldChange) > 1,
+  "Significant", "Not significant"
+)
+
+ggplot(res_df, aes(x = log2FoldChange, y = -log10(pvalue), color = significant)) +
+  geom_point(alpha = 0.8, size = 2) +
+  scale_color_manual(values = c("gray70", "red")) +
+  theme_minimal() +
+  labs(title = "Volcano Plot: High vs Low Severity",
+       x = "log2 Fold Change (High vs Low)",
+       y = "-log10(p-value)")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+groups <- levels(colData(dds_tumor_type)$tumor_group)
+
+# 🔹 Für jede Gruppe: gegen alle anderen
+for (g in groups) {
+  message("Comparing ", g, " vs rest...")
+
+  # Erstelle Kontrastvektor: Gruppe vs Rest
+  contrast_vec <- rep(-1 / (length(groups) - 1), length(groups))
+  names(contrast_vec) <- groups
+  contrast_vec[g] <- 1
+
+  # Ergebnisse holen (Achtung: hier KEINE doppelte Liste!)
+  res <- results(dds_tumor_type, contrast = contrast_vec)
+
+  res_df <- as.data.frame(res)
+  res_df$gene <- rownames(res_df)
+
+  # Signifikante Gene markieren
+  res_df$significant <- ifelse(
+    res_df$padj < 0.05 & abs(res_df$log2FoldChange) > 1,
+    "Significant", "Not significant"
+  )
+
+  # Volcano Plot
+  p <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(pvalue), color = significant)) +
+    geom_point(alpha = 0.7, size = 1.8) +
+    scale_color_manual(values = c("gray70", "red")) +
+    theme_minimal(base_size = 12) +
+    labs(
+      title = paste("Volcano Plot:", g, "vs rest"),
+      x = "log2 Fold Change",
+      y = "-log10(p-value)"
+    ) +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black", size = 0.3) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", size = 0.3)
+
+  print(p)
+}
+```
+
