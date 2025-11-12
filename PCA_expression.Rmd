@@ -6,10 +6,6 @@ output: html_document
 ---
 
 #Load and filter 
-```{bash}
-git checkout chris
-```
-
 ```{r}
 #Read meta_data
 meta_data <- read.csv("meta_data_unfiltered", row.names = 1)
