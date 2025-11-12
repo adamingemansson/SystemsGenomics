@@ -1,0 +1,184 @@
+---
+title: "DEG_astr_oligo"
+author: "Christoph Luh"
+date: "2025-11-09"
+output: html_document
+---
+As the differences are not that big within the astrocytoma tumors, lets compare astrocytomas (low-grade + anaplastic) to oligodendrogliomas
+
+#Load and filter the meta data
+
+
+```{r}
+#Read meta_data
+meta_data <- read.csv("meta_data_unfiltered", row.names = 1)
+meta_data <- data.frame(Run = meta_data$Run, history = meta_data$history)
+
+#Remove unwanted histroies (only astrocytomas are left now)
+exclude_terms <- c(
+  "recurrent astrocytomas",
+  "secondary Glioblastomas",
+  "recurrent anaplastic oligodendrogliomas",
+  "recurrent anaplastic astrocytomas",
+  "recurrent anaplastic oligodendroastrocytomas",
+  "recurrent Glioblastomas",
+  "recurrent oligodendroastrocytomas"
+)
+
+meta_data <- meta_data[!(meta_data$history %in% exclude_terms), ]
+
+meta_data$severity <- ifelse(
+  grepl("anaplastic|primary", meta_data$history, ignore.case = TRUE),
+  "high",
+  "low"
+)
+
+#Create filtering columns
+tumor_types <- c("astrocytomas", "oligodendroastrocytomas", "oligodendrogliomas")
+
+for (tumor in tumor_types) {
+  col_name <- tumor
+  
+  meta_data[[col_name]] <- ifelse(
+    meta_data$history %in% c(tumor, paste("anaplastic", tumor)),
+    1,
+    0
+  )
+}
+
+meta_data$glioblastomas <- ifelse(
+  meta_data$history %in% c("primary Glioblastomas"),
+  1,
+  0
+)
+
+print(meta_data)
+
+```
+
+
+#Load and filter expression data
+```{bash}
+git checkout main
+```
+
+```{r}
+expr <- read.csv("expression_matrix.csv", row.names = 1)
+expr <- expr[colnames(expr) %in% meta_data$Run]
+expr
+```
+#Load the genes meta data
+```{r}
+library(biomaRt)
+library(dplyr)
+
+
+ensembl <- useEnsembl(biomart = "ensembl",
+                      dataset = "hsapiens_gene_ensembl")
+meta_genes <- getBM(attributes = c("ensembl_gene_id",
+                                   "ensembl_gene_id_version",
+                                   "hgnc_symbol",
+                                   "description",
+                                   "chromosome_name",
+                                   "start_position",
+                                   "end_position",
+                                   "strand"),
+                    filters = "ensembl_gene_id_version",
+                    values = rownames(expr),
+                    mart = ensembl) %>%
+  right_join(data.frame(ensembl_gene_id_version = rownames(expr)),
+             by = "ensembl_gene_id_version") %>%
+  distinct(ensembl_gene_id_version, .keep_all = TRUE)
+
+
+expr <- expr[meta_genes$ensembl_gene_id_version,]
+
+```
+
+#Filter for expressed genes
+```{r}
+library(ggplot2)
+num_det <- rowSums(expr > 0)
+hist(num_det)
+expressed <- rowMeans(expr > 0) >= 0.5 | rowMeans(expr) >= 1
+meta_genes$expressed <- expressed
+```
+
+#Load DDS File
+```{r}
+library(DESeq2)
+dds <- readRDS("dds.rds")
+```
+
+#Add the sample names to the dds object
+```{r}
+rownames(colData(dds)) <- colData(dds)$Run
+```
+
+#Clean the colData(dds) from all the secondary/recursive tumors by using meta_data
+```{r}
+# Filter samples in dds which are not in meta_data
+dds <- dds[, colnames(dds) %in% meta_data$Run]
+
+# Get colData(dds) into the right order like in meta_data
+dds <- dds[, match(meta_data$Run, colnames(dds))]
+
+# Check if all dds rows are the same as in meta_data, should be TRUE
+all(colnames(dds) == meta_data$Run)
+
+```
+#Factorize History
+```{r}
+#The columns in the dds file used as a design, must be a factor
+colData(dds)$history <- as.factor(colData(dds)$history)
+```
+
+#Remove unused histories (No factor should have 0 usages in the table)
+```{r}
+colData(dds)$history <- droplevels(colData(dds)$history)
+levels(colData(dds)$history)   
+table(colData(dds)$history)    
+
+```
+
+
+
+
+
+#DEG 3: comparing astrocytomas to oligodendrogliomas
+```{r}
+#Create a column in dds for the combined histories
+colData(dds)$history_combined <- as.character(colData(dds)$history)
+colData(dds)$history_combined[
+  colData(dds)$history_combined %in% c("anaplastic astrocytomas", "astrocytomas")
+] <- "all_astrocytomas"
+colData(dds)$history_combined[
+  colData(dds)$history_combined %in% c("anaplastic oligodendrogliomas", "oligodendrogliomas")
+] <- "all_oligodendrogliomas"
+colData(dds)$history_combined <- factor(colData(dds)$history_combined)
+
+# Set design and run
+design(dds) <- ~ history_combined
+dds_astr_oligo <- DESeq(dds)
+
+```
+
+```{r}
+#Create a result variable that compares all_astrocytomas to all_oligodendrogliomas
+res_astr_oligo <- results(dds_astr_oligo, contrast = c("history_combined", "all_oligodendrogliomas", "all_astrocytomas"))
+```
+
+```{r}
+#This chunk adds the gene names of the genes at the last column. As the ENSEMBL gene IDs do not really explain what gene this is, this columns is useful for understanding
+library(org.Hs.eg.db)
+res_astr_oligo.df <- as.data.frame(res_astr_oligo)
+genes_clean <- sub("\\.\\d+$", "", rownames(res_astr_oligo.df))
+res_astr_oligo.df$symbol <- mapIds(org.Hs.eg.db, keys = genes_clean, keytype = "ENSEMBL", column = "SYMBOL")
+res_astr_oligo.df
+```
+
+#Volcanoplot of the DEG 2 (High vs. Low level)
+```{r}
+library(EnhancedVolcano)
+EnhancedVolcano(res_astr_oligo.df, x = "log2FoldChange", y = "padj", lab = res_astr_oligo.df$symbol)
+```
