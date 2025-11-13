@@ -26,7 +26,7 @@ skip that part.
 git checkout main
 ```
 
-## Load and filter the meta data ##
+## Load and filter the meta data
 
 ```{r}
 #Read meta_data
@@ -80,7 +80,7 @@ print(meta_data)
 
 ```
 
-## Load and filter expression data ##
+## Load and filter expression data
 
 ```{r}
 expr <- read.csv("expression_matrix.csv", row.names = 1)
@@ -88,7 +88,7 @@ expr <- expr[colnames(expr) %in% meta_data$Run]
 expr
 ```
 
-## Load the genes meta data from ENSEMBL ##
+## Load the genes meta data from ENSEMBL
 
 ```{r}
 library(biomaRt)
@@ -117,7 +117,7 @@ expr <- expr[meta_genes$ensembl_gene_id_version,]
 
 ```
 
-## Filter for expressed genes ## 
+## Filter for expressed genes
 
 ```{r}
 library(ggplot2)
@@ -127,14 +127,14 @@ expressed <- rowMeans(expr > 0) >= 0.5 | rowMeans(expr) >= 1
 meta_genes$expressed <- expressed
 ```
 
-## Load DDS File ##
+## Load DDS File
 
 ```{r}
 library(DESeq2)
 dds <- readRDS("dds.rds")
 ```
 
-## Clean the colData(dds) from all the secondary/recursive tumors by using meta_data ##
+## Clean the colData(dds) from all the secondary/recursive tumors by using meta_data
 
 ```{r}
 # Filter samples in dds which are not in meta_data
@@ -148,14 +148,14 @@ all(colnames(dds) == meta_data$Run)
 
 ```
 
-## Factorize History ##
+## Factorize History
 
 ```{r}
 #The columns in the dds file used as a design, must be a factor
 colData(dds)$history <- as.factor(colData(dds)$history)
 ```
 
-## Remove unused histories (No factor should have 0 usages in the table) ##
+## Remove unused histories (No factor should have 0 usages in the table)
 
 ```{r}
 colData(dds)$history <- droplevels(colData(dds)$history)
@@ -164,8 +164,9 @@ table(colData(dds)$history)
 
 ```
 
-# Differential Expression Analysis ##DEG 1: Comparing different historys #
-with another
+# Differential Expression Analysis
+
+## DEG 1: Comparing different histories with another
 
 ```{r}
 #Set astrocytomas as a reference
@@ -177,246 +178,109 @@ design(dds) <- ~ history
 dds_history <- DESeq(dds)
 ```
 
-# Ignore this part #
-# _____________________________ #
+# Comparison of different histories
 
-## DEG 2: comparing low grade astrocytomas to high grade astrocytomas ##
-(anapl. astrocyt. + prim. Glioblast.)
+This chunk creates results variables for all different combinations of
+history comparisons and filters out the significantly differentially
+expressed genes (padj \< 0.05)
 
-```{r}
-#Create a column in dds for the combined histories
-colData(dds)$history_combined <- as.character(colData(dds)$history)
-colData(dds)$history_combined[
-  colData(dds)$history_combined %in% c("anaplastic astrocytomas", "primary Glioblastomas")
-] <- "high_grade"
-colData(dds)$history_combined[
-  colData(dds)$history_combined == "astrocytomas"
-] <- "low_grade"
-colData(dds)$history_combined <- factor(colData(dds)$history_combined)
-
-# Set design and run
-design(dds) <- ~ history_combined
-dds_loast_hiast <- DESeq(dds)
-
-```
-
-```{r}
-vsdata <- vst(dds_history, blind = FALSE)
-plotPCA(vsdata, intgroup = "history")
-```
-
-```{r}
-#Create a result variable that compares low_grade to high_grade
-res_low_vs_high <- results(dds_loast_hiast, contrast = c("history_combined", "low_grade", "high_grade"))
-```
-
-```{r}
-#This chunk adds the gene names of the genes at the last column. As the ENSEMBL gene IDs do not really explain what gene this is, this columns is useful for understanding
-library(org.Hs.eg.db)
-res_low_vs_high.df <- as.data.frame(res_low_vs_high)
-genes_clean <- sub("\\.\\d+$", "", rownames(res_low_vs_high.df))
-res_low_vs_high.df$symbol <- mapIds(org.Hs.eg.db, keys = genes_clean, keytype = "ENSEMBL", column = "SYMBOL")
-res_low_vs_high.df
-```
-
-## Volcanoplot of the DEG 2 (High vs. Low level) ##
-
-```{r, fig.height=10,fig.width=10}
-library(EnhancedVolcano)
-EnhancedVolcano(res_low_vs_high.df, x = "log2FoldChange", y = "padj", lab = res_low_vs_high.df$symbol)
-```
-
-No significant DEGs... Uff...
-# _____________________________________ #
-
-## With the results file one can create different comparisons of certain ##
-astrocytoma types. Here ATM anapalstic astocytoma vs. primary
-Glioblastoma
-
-```{r}
-res_astro <- results(dds_history, contrast = c("history", "astrocytomas", "anaplastic astrocytomas"))
-
-#This chunk adds the gene names of the genes at the last column. As the ENSEMBL gene IDs do not really explain what gene this is, this columns is useful for understanding
-library(org.Hs.eg.db)
-res_astro.df <- as.data.frame(res_astro)
-genes_clean <- sub("\\.\\d+$", "", rownames(res_astro.df))
-res_astro.df$symbol <- mapIds(org.Hs.eg.db, keys = genes_clean, keytype = "ENSEMBL", column = "SYMBOL")
-res_astro.df
-```
-
-# Visualization of the DEG ##Volcano Plot of the DESeq History #
-
-```{r, fig.height=10,fig.width=12}
-library(EnhancedVolcano)
-EnhancedVolcano(res_astro.df, x = "log2FoldChange", y = "padj", lab = res_low_vs_high.df$symbol)
-```
-
-# Comparison of different histories This chunk creates results variables #
-for all different combinations of history comparisons and filters out
-the significantly differentially expressed genes (padj \< 0.05)
+This chunk also adds a column called "SYMBOL", which has information
+about the gene that is encoded by this cryptic ENSEBL ID.
 
 ```{r}
 #Low Grade Astrocytoma vs. Anaplastic Astrocytoma
 res_LGA_APA <- as.data.frame(results(dds_history, contrast = c("history", "astrocytomas", "anaplastic astrocytomas")))
+genes_clean <- sub("\\.\\d+$", "", rownames(res_LGA_APA))
+res_LGA_APA$symbol <- mapIds(org.Hs.eg.db, keys = genes_clean, keytype = "ENSEMBL", column = "SYMBOL")
+res_LGA_APA$clean_names <- genes_clean
 sig_LGA_APA <- res_LGA_APA[!is.na(res_LGA_APA$padj) & res_LGA_APA$padj < 0.05, ]
 
 #Low Grade Astrocytoma vs. Primary Glioblastoma
 res_LGA_GBM <- as.data.frame(results(dds_history, contrast = c("history", "astrocytomas", "primary Glioblastomas")))
+genes_clean <- sub("\\.\\d+$", "", rownames(res_LGA_GBM))
+res_LGA_GBM$symbol <- mapIds(org.Hs.eg.db, keys = genes_clean, keytype = "ENSEMBL", column = "SYMBOL")
+res_LGA_GBM$clean_names <- genes_clean
 sig_LGA_GBM <- res_LGA_GBM[!is.na(res_LGA_GBM$padj) & res_LGA_GBM$padj < 0.05, ]
 
 #Low Anaplastic Astrocytoma vs. Primary Glioblastoma
 res_APA_GBM <- as.data.frame(results(dds_history, contrast = c("history", "anaplastic astrocytomas", "primary Glioblastomas")))
+genes_clean <- sub("\\.\\d+$", "", rownames(res_APA_GBM))
+res_APA_GBM$symbol <- mapIds(org.Hs.eg.db, keys = genes_clean, keytype = "ENSEMBL", column = "SYMBOL")
+res_APA_GBM$clean_names <- genes_clean
 sig_APA_GBM <- res_APA_GBM[!is.na(res_APA_GBM$padj) & res_APA_GBM$padj < 0.05, ]
 ```
 
-This chunk adds a column called "SYMBOL", which has information about
-the gene that is encoded by this cryptic ENSEBL ID.
-
 ```{r}
 library(org.Hs.eg.db)
 library(clusterProfiler)
+library(EnhancedVolcano)
 library(AnnotationDbi)
-sig_LGA_APA.df <- as.data.frame(sig_LGA_APA)
-genes_clean <- sub("\\.\\d+$", "", rownames(sig_LGA_APA.df))
-sig_LGA_APA.df$symbol <- mapIds(org.Hs.eg.db, keys = genes_clean, keytype = "ENSEMBL", column = "SYMBOL")
-sig_LGA_APA.df
-#PHLDA1-AS1 is 22 fold higher expressed in low-grade astrocytomas --> PHLDA1 protein is a target of the tumor suppressor gene p53 and helps to suppress tumors by inhibiting the Akt pathway
-
-
-sig_LGA_GBM.df <- as.data.frame(sig_LGA_GBM)
-genes_clean <- sub("\\.\\d+$", "", rownames(sig_LGA_GBM.df))
-sig_LGA_GBM.df$symbol <- mapIds(org.Hs.eg.db, keys = genes_clean, keytype = "ENSEMBL", column = "SYMBOL")
-sig_LGA_GBM.df
-#BARX1 is 2.7 fold higher expressed in low-grade astrocytomas -->  Studies of the mouse and chick homolog suggest the encoded protein may play a role in developing teeth and craniofacial mesenchyme of neural crest origin.
-#RCAN1 is 1.37 fold higher expressed in primary Gliobalstoma --> RCAN1 is an inhibitor of Calcineurin. Calcineurin is a key activator in T-Cell activation. Inhibition of it leads to immune supression
-#IGF2 is 2 fold higher expressed in astrocytomas --> is an embryonal growth factor; might play a role in tumor progession
-
-
-
-sig_APA_GBM.df <- as.data.frame(sig_APA_GBM)
-genes_clean <- sub("\\.\\d+$", "", rownames(sig_APA_GBM.df))
-sig_APA_GBM.df$symbol <- mapIds(org.Hs.eg.db, keys = genes_clean, keytype = "ENSEMBL", column = "SYMBOL")
-sig_APA_GBM.df
-#HGF is 2.3 times higher expressed in anaplastic-astrocytomas --> is a hematopoietic growth factor
-#PHLDA1-AS1 is 22 fold higher expressed in primary glioblastomas --> PHLDA1 protein is a target of the tumor suppressor gene p53 and helps to suppress tumors by inhibiting the Akt pathway
-
 
 ```
 
-## Not so important to be honest ##
-## ________________________________ ##
+## Low-grade Astrocytoma vs. Anaplastic Astrocytoma
 
-This is a list of ALL genes that were found during comparison of the
-three histories.
+*Significant DEGs*
 
 ```{r}
-DEG_all_astrocytomas <- unique(c(rownames(sig_LGA_APA), rownames(sig_LGA_GBM), rownames(sig_APA_GBM)))
-DEG_all_astrocytomas
+class(sig_LGA_APA)
+sig_LGA_APA[, c("clean_names", "log2FoldChange", "padj", "symbol")]
+
+class(sig_LGA_GBM)
+sig_LGA_GBM[, c("clean_names", "log2FoldChange", "padj", "symbol")]
+
+class(sig_APA_GBM)
+sig_APA_GBM[, c("clean_names", "log2FoldChange", "padj", "symbol")]
 ```
 
-This is a table of the mean expression levels of the genes found in the
-DEG-history analysis for the three typers of astrocytomas
+*Volcano Plot*
 
-```{r}
-DEG_expr <- data.frame(matrix(0, 
-                        nrow = length(DEG_all_astrocytomas), 
-                        ncol = length(c("astrocytomas", "anaplastic astrocytomas", "primary Glioblastomas")),
-                        dimnames = list(DEG_all_astrocytomas, c("astrocytomas", "anaplastic astrocytomas", "primary Glioblastomas"))),
-  check.names = FALSE)
-
-for (tumor in c("astrocytomas", "anaplastic astrocytomas", "primary Glioblastomas")){
-  DEG_expr[, tumor] <- rowMeans(expr[DEG_all_astrocytomas, meta_data[meta_data$history %in% tumor, ]$Run])
-}
-DEG_expr 
+```{r, fig.height=10,fig.width=12}
+EnhancedVolcano(res_LGA_APA, x = "log2FoldChange", y = "padj", lab = res_LGA_APA$symbol, pCutoff = 0.05)
+EnhancedVolcano(res_LGA_GBM, x = "log2FoldChange", y = "padj", lab = res_LGA_GBM$symbol, pCutoff = 0.05)
+EnhancedVolcano(res_APA_GBM, x = "log2FoldChange", y = "padj", lab = res_APA_GBM$symbol, pCutoff = 0.05)
 ```
 
+*Enrichment Analysis* Creation of Background for enrichtment
+
 ```{r}
-#Safes the list
-#write.csv2(DEG_expr, "DEG_expr.csv", row.names = TRUE)
+background <- meta_genes[meta_genes$expressed, "ensembl_gene_id"]
 ```
 
-## ------------------------------------------------------------------------ ##
-
-# Visualization of the expression levels of DEGs #
+Analysis for the different combinations of histories
 
 ```{r}
-library(ggplot2)
-TOI <- c("astrocytomas", "anaplastic astrocytomas", "primary Glioblastomas")
-expr_1 <- as.data.frame(meta_data[meta_data$history %in% TOI, c("Run", "history")])
-```
-
-## Boxplot of expression levels of the DEG-history genes ##
-
-```{r}
-library(ggplot2)
-
-for (gene in DEG_all_astrocytomas) {
-  b <- ggplot(expr_1, aes(x = history, y = .data[[gene]], fill = history)) +
-  geom_boxplot(outlier.shape = NA) +
-  geom_jitter(width = 0.2, alpha = 0.4) +
-  theme_bw() +
-  labs(title = gene, x = "Tumor Type", y = "Expression Level")
-
-  print(b)
-}
-
-```
-
-## Violin plot of expression levels of the DEG-history genes ##
-
-```{r}
-library(ggplot2)
-
-for (gene in DEG_all_astrocytomas) {
-  v <- ggplot(expr_1, aes(x = history, y = .data[[gene]], fill = history)) +
-  geom_violin(trim = FALSE, alpha = 0.6) +
-  geom_boxplot(width = 0.1, fill = "white") +
-  theme_bw()
-
-
-  print(v)
-}
-
-```
-
-# Gene Ontology of the DEG genes #
-
-```{r}
-library(org.Hs.eg.db)
-library(clusterProfiler)
-library(AnnotationDbi)
-```
-
-## Creation of Background reference ##
-
-## Different comparisons ##
-###(Low-grade) Astrocytomas vs. anaplastic Astrocytomas ###
-
-
-```{r}
-#Create a DF from the significantly DEGs
-sig_LGA_APA.df <- as.data.frame(sig_LGA_APA)
-
-#Remove the ENSEBLE letters from the gene IDs
-genes_clean <- sub("\\.\\d+$", "", rownames(sig_LGA_APA.df))
-
-#Add the gene name for every gene
-sig_LGA_APA.df$symbol <- mapIds(org.Hs.eg.db, keys = genes_clean, keytype = "ENSEMBL", column = "SYMBOL")
-sig_LGA_APA.df
-
 #Do the enrichment analysis
-GO_LGA_APA <- enrichGO(gene = genes_clean, OrgDb = "org.Hs.eg.db", keyType = "ENSEMBL", ont = "BP")
+GO_LGA_APA <- enrichGO(gene = sig_LGA_APA$clean_names, OrgDb = "org.Hs.eg.db", keyType = "ENSEMBL", ont = "BP", universe = background)
+GO_LGA_GBM <- enrichGO(gene = sig_LGA_GBM$clean_names, OrgDb = "org.Hs.eg.db", keyType = "ENSEMBL", ont = "BP", universe = background)
+#Gene enrichment for APA vs. GMB is not sensible, as we only have three genes
 ```
 
 ```{r}
 #Dataframe of the enrighment GO analysis
-as.data.frame(GO_LGA_APA[GO_LGA_APA$p.adjust < 0.005])
+GO_LGA_APA.df <- as.data.frame(GO_LGA_APA[GO_LGA_APA$p.adjust < 0.005])
+GO_LGA_APA.df
+
+GO_LGA_GBM.df <- as.data.frame(GO_LGA_GBM[GO_LGA_GBM$p.adjust < 0.005])
+GO_LGA_GBM.df
 ```
 
-###(Low-grade) Astrocytomas vs. primary Glioblastomas ###
+*Barplot of the gene enrichment analysis*
 
-### Anaplastic Astrocytomas vs. primary Glioblastomas ###
+```{r, fig.height=10,fig.width=12}
+barplot(GO_LGA_APA,
+      x = "GeneRatio",
+      color = "p.adjust",
+      title = "GO Enrichment",
+      showCategory = 5,
+      label_format = 80
+)
 
-To be fair, GO does not work with such a low amount of genes. We might
-do that to compare astrocytomas to oligodendrocytomas or so. I think we
-should rather have a manual look into the genes.
+barplot(GO_LGA_GBM,
+      x = "GeneRatio",
+      color = "p.adjust",
+      title = "GO Enrichment",
+      showCategory = 13,
+      label_format = 80
+)
+```
